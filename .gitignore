@@ -1,0 +1,25 @@
+# Ambienti virtuali Python
+venv/
+env/
+
+# Cache di Python (file generati automaticamente)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Modelli addestrati (pesano e cambiano ad ogni run)
+*.zip
+models/
+
+# Video e media generati
+*.mp4
+*.avi
+
+# Log di TensorBoard e directory di output
+sailing_tensorboard/
+outputs/
+logs/
+
+# Cartelle specifiche degli IDE (es. VS Code, PyCharm)
+.vscode/
+.idea/
