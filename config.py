@@ -16,7 +16,8 @@ WIND_MIN_RANDOM = 12.0       # Vento minimo generato a inizio gara
 WIND_MAX_RANDOM = 18.0       # Vento massimo generato a inizio gara
 
 # --- HYPERPARAMETERS DELL'AGENTE (PPO) ---
-TOTAL_TIMESTEPS = 500000     # Durata totale dell'addestramento
+TOTAL_TIMESTEPS_SOLO = 3000000    # Durata totale dell'addestramento in solo
+TOTAL_TIMESTEPS_SELF_PLAY = 500000 # Durata totale dell'addestramento in self-play
 LEARNING_RATE = 3e-4         # Tasso di apprendimento
 N_STEPS = 2048               # Step raccolti prima di aggiornare la rete
 BATCH_SIZE = 64              # Dimensione del batch per la rete neurale

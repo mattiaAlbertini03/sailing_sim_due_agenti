@@ -10,7 +10,7 @@ def get_tack(boat_heading, wind_dir):
     """
     # Calcoliamo l'angolo relativo del vento rispetto alla prua della barca
     # Normalizziamo l'angolo tra -pi e pi
-    relative_wind = normalize_angle(wind_dir - boat_heading)
+    relative_wind = (wind_dir - boat_heading + np.pi) % (2 * np.pi) - np.pi
     
     # Se il vento arriva da destra (angolo positivo), siamo mure a dritta (starboard)
     # Se arriva da sinistra (angolo negativo), siamo mure a sinistra (port)
@@ -61,29 +61,19 @@ def get_right_of_way(boat_1, boat_2, wind_dir):
             
     return None # Fallback di sicurezza
 
-def check_penalties(boat_1, boat_2, wind_dir, penalty_radius=30.0):
-    """
-    Controlla se c'è un'infrazione e distribuisce le penalità in modo proporzionale.
-    Restituisce una tupla: (penalità_barca_1, penalità_barca_2)
-    """
+# Cambia penalty_radius da 30.0 a 8.0 (che simula uno scontro o un passaggio troppo ravvicinato)
+def check_penalties(boat_1, boat_2, wind_dir, penalty_radius=8.0):
     dist = np.hypot(boat_1.x - boat_2.x, boat_1.y - boat_2.y)
     
-    # Se le barche sono a distanza di sicurezza, nessuna penalità
     if dist > penalty_radius:
         return 0.0, 0.0
         
-    # Scopriamo chi ha ragione e chi ha torto
     right_of_way_id = get_right_of_way(boat_1, boat_2, wind_dir)
     
-    # Calcoliamo la gravità: più sono vicine sotto i 30 metri, più la penalità sale
-    # Questo aiuta il "Reward Shaping" dell'agente a capire il gradiente di errore
-    severity = (penalty_radius - dist) / penalty_radius
-    base_penalty = 100.0 * severity  # Penalità massima di 100 punti se si scontrano
+    # Penalità fissa ma sostanziosa per il contatto
+    base_penalty = 50.0 
     
-    penalty_1 = 0.0
-    penalty_2 = 0.0
-    
-    # Chi non ha la precedenza si prende la penalità negativa
+    penalty_1, penalty_2 = 0.0, 0.0
     if right_of_way_id == boat_1.id:
         penalty_2 = -base_penalty
     elif right_of_way_id == boat_2.id:

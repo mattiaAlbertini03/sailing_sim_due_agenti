@@ -1,68 +1,102 @@
 import os
+import glob
+import random
 import numpy as np
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 import gymnasium as gym
+
 # Importiamo l'ambiente e le configurazioni
 from environment import ImprovedSailingEnv
 import config
 
-
 class SelfPlayWrapper(gym.Env):
-    def __init__(self):
-        self.env = ImprovedSailingEnv()
-        # Spazi di azione e osservazione per la singola barca
+    def __init__(self, mode="solo"):
+        super().__init__()
+        self.mode = mode
+        self.env = ImprovedSailingEnv(mode=self.mode)
+        
         self.action_space = self.env.action_spaces["boat_0"]
-
         self.observation_space = self.env.observation_spaces["boat_0"]
-
-        opponent_model_path = config.MODEL_NAME
-        # Carichiamo il "fantasma" dell'avversario
+        
         self.opponent_model = None
+        self.episodes_with_current = 0
+        
+        # Definiamo i percorsi delle due cartelle di storico
+        self.history_solo = "models/history/solo"
+        self.history_self_play = "models/history/self_play"
+        
+        # Creiamo le cartelle se non esistono
+        os.makedirs(self.history_solo, exist_ok=True)
+        os.makedirs(self.history_self_play, exist_ok=True)
+        
+        if self.mode == "self_play":
+            self._load_random_opponent()
 
-        #provo a fare un allenamento singolo inizialmente
-        if os.path.exists(opponent_model_path + ".zip"):
-            print("Avversario caricato: L'agente combatterà contro una versione precedente di se stesso!")
-            self.opponent_model = PPO.load(opponent_model_path)
+    def _load_random_opponent(self):
+        """Pesca un avversario a caso cercando in entrambi i rami dello storico."""
+        models_solo = glob.glob(f"{self.history_solo}/*.zip")
+        models_sp = glob.glob(f"{self.history_self_play}/*.zip")
+        
+        all_candidates = models_solo + models_sp
+        
+        # Aggiungiamo anche il modello principale corrente se esiste
+        if os.path.exists(config.MODEL_NAME + ".zip"):
+            all_candidates.append(config.MODEL_NAME + ".zip")
+            
+        if len(all_candidates) > 0:
+            chosen = random.choice(all_candidates)
+            self.opponent_model = PPO.load(chosen)
+            print(f"🥊 [ARENA] Nuovo avversario caricato: {os.path.basename(chosen)}")
         else:
-            print("Nessun modello avversario trovato. L'avversario farà mosse casuali.")
+            print("⚠️ Nessun modello trovato nello storico. L'avversario rimarrà fermo.")
 
     def reset(self, seed=None, options=None):
+        # In Self-Play, cambiamo avversario ogni 10 episodi per varietà
+        if self.mode == "self_play":
+            self.episodes_with_current += 1
+            if self.episodes_with_current >= 10:
+                self._load_random_opponent()
+                self.episodes_with_current = 0
+
         obs_dict, info_dict = self.env.reset(seed=seed, options=options)
         self.current_obs = obs_dict
         return obs_dict["boat_0"], info_dict.get("boat_0", {})
 
     def step(self, action):
-        # 1. Decidiamo l'azione dell'avversario (boat_1)
-        if self.opponent_model:
+        if self.mode == "self_play" and self.opponent_model:
             action_b, _ = self.opponent_model.predict(self.current_obs["boat_1"], deterministic=True)
         else:
-            action_b = self.action_space.sample() # Azione casuale se non c'è modello
+            action_b = np.array([0.0, 0.0])
 
-        # 2. Assembliamo il dizionario delle azioni
         actions = {"boat_0": action, "boat_1": action_b}
-
-        # 3. Facciamo avanzare l'ambiente Multi-Agente
-        obs, rewards, terminated, truncated, infos = self.env.step(actions)
+        obs, rewards, terminations, truncations, infos = self.env.step(actions)
         self.current_obs = obs
-
-       # 4. Estraiamo solo i risultati della barca in addestramento (boat_0)
-        obs_b0 = obs.get("boat_0", np.zeros(shape=(13,), dtype=np.float32))
-        reward = rewards.get("boat_0", 0.0)
-        info = infos.get("boat_0", {})
         
-        # --- MODIFICA QUI: Estraiamo i booleani dai dizionari ---
-        term_b0 = terminated.get("boat_0", False)
-        trunc_b0 = truncated.get("boat_0", False)
-        
-        return obs_b0, reward, term_b0, trunc_b0, info
+        return obs["boat_0"], rewards["boat_0"], terminations["boat_0"], truncations["boat_0"], infos["boat_0"]
 
+class SaveHistoryCallback(BaseCallback):
+    """Salva una copia del modello ogni tot step nella cartella specifica del mode."""
+    def __init__(self, save_freq, mode, verbose=0):
+        super().__init__(verbose)
+        self.save_freq = save_freq
+        self.mode = mode
+        self.save_path = f"models/history/{self.mode}"
+
+    def _init_callback(self) -> None:
+        os.makedirs(self.save_path, exist_ok=True)
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.save_freq == 0:
+            path = os.path.join(self.save_path, f"model_{self.num_timesteps}_steps")
+            self.model.save(path)
+            if self.verbose > 0:
+                print(f"\n💾 [STORICO {self.mode.upper()}] Salvata copia: {path}")
+        return True
 
 class SuccessTrackingCallback(BaseCallback):
-    """
-    Tracks success rate over the last 100 episodes.
-    """
+    """Tracks success rate over the last 100 episodes."""
     def __init__(self, verbose=0, check_freq=config.CHECK_FREQ):
         super().__init__(verbose)
         self.check_freq = check_freq
@@ -155,57 +189,40 @@ class SuccessTrackingCallback(BaseCallback):
 
         print(f"{'='*70}\n")
 
-
-def training():
-    """Main training function"""
+def training(mode="solo"):
     os.makedirs(config.TENSORBOARD_LOG_DIR, exist_ok=True)
-
+    
     print("="*70)
-    print("🛥️  SAILING RL - IMPROVED CONVERGENCE VERSION")
+    print(f"🛥️  SAILING RL - MODE: {mode.upper()}")
     print("="*70)
 
-    print("1. Creating environment...")
-    train_env = SelfPlayWrapper()
+    train_env = SelfPlayWrapper(mode=mode)
     train_env = Monitor(train_env)
-    print("Environment created!")
 
-    print("\n2. Creating PPO model with improved hyperparameters...")
-
-    model_path = config.MODEL_NAME
-    if os.path.exists(model_path + ".zip"):
+    if os.path.exists(config.MODEL_NAME + ".zip"):
         print("Riprendo l'addestramento del modello esistente...")
-        model = PPO.load(model_path, env=train_env)
+        model = PPO.load(config.MODEL_NAME, env=train_env)
     else:
         print("Creo un nuovo modello PPO da zero...")
-        model = PPO(
-            "MlpPolicy",
-            train_env,
-            learning_rate=config.LEARNING_RATE,
-            n_steps=config.N_STEPS,
-            batch_size=config.BATCH_SIZE,
-            n_epochs=config.N_EPOCHS,
-            gamma=config.GAMMA,
-            gae_lambda=config.GAE_LAMBDA,
-            clip_range=config.CLIP_RANGE,
-            ent_coef=config.ENT_COEF,
-            verbose=0,
-            tensorboard_log=config.TENSORBOARD_LOG_DIR
-        )
-    print("PPO model created!")
+        model = PPO("MlpPolicy", train_env, verbose=0, tensorboard_log=config.TENSORBOARD_LOG_DIR,
+                    learning_rate=config.LEARNING_RATE, n_steps=config.N_STEPS, batch_size=config.BATCH_SIZE)
 
-    print("\n3. Setting up callback...")
-    callback = SuccessTrackingCallback(verbose=1, check_freq=config.CHECK_FREQ)
-    print("Callback ready!")
+    # --- IMPOSTAZIONE DINAMICA DELLA FREQUENZA DI SALVATAGGIO ---
+    if mode == "solo":
+        timesteps = config.TOTAL_TIMESTEPS_SOLO
+        freq = 300000  # Salva ogni 300.000 step per la maratona in Solo
+    else:
+        timesteps = config.TOTAL_TIMESTEPS_SELF_PLAY
+        freq = 100000  # Salva ogni 100.000 step per le sessioni brevi in Self-Play
 
-    print(f"\n4. Training for {config.TOTAL_TIMESTEPS} steps...")
-
-    model.learn(
-        total_timesteps=config.TOTAL_TIMESTEPS,
-        callback=callback,
-        progress_bar=False
-    )
+    # Configuriamo le callback
+    success_cb = SuccessTrackingCallback(verbose=1, check_freq=config.CHECK_FREQ)
+    history_cb = SaveHistoryCallback(save_freq=freq, mode=mode, verbose=1) 
+    
+    model.learn(total_timesteps=timesteps, callback=CallbackList([success_cb, history_cb]))
 
     model.save(config.MODEL_NAME)
-    print(f"\n Model saved as '{config.MODEL_NAME}'")
-#TODO chiudere env??
-    return model, train_env, callback
+    model.save(f"models/history/{mode}/model_final_{mode}")
+    print(f"\n✅ Modello salvato come '{config.MODEL_NAME}' e nello storico {mode}")
+
+    return model, train_env, success_cb

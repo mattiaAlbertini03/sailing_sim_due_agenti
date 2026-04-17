@@ -63,6 +63,7 @@ class SailingBoat:
         self.foil = False
         self.trajectory = [(self.x, self.y, self.foil)]
         self.prev_action = 0.0
+        self.last_foil_action = False
 
     def get_polar_speed_2(self, apparent_wind_angle, wind_speed):
         """
@@ -85,44 +86,51 @@ class SailingBoat:
         - action_foil: boolean o float > 0.5 per indicare volontà di volo
         """
         # 1. GESTIONE TIMONE
-        # Massima virata consentita: 10 gradi al secondo (moltiplicato per dt)
-        max_turn_rate = np.radians(15) * config.DT
-        turn_angle = action_turn * max_turn_rate
+        rudder_effectiveness = np.clip(self.speed / 3.0, 0.2, 1.0)
+        max_turn_rate = np.radians(4) * config.DT
+        
+        turn_angle = action_turn * max_turn_rate * rudder_effectiveness
         self.heading = normalize_angle(self.heading + turn_angle)
         reward = 0
 
 
         
-        # 2. GESTIONE FOIL MANUALE CON STALLO
-        wants_to_foil = action_foil > 0.5
-        if wants_to_foil and self.speed >= 6.0:
+        # 2. GESTIONE FOIL CON ANTI-SINGHIOZZO
+        if self.last_foil_action:
+            wants_to_foil = action_foil > -0.2
+        else:
+            wants_to_foil = action_foil > -0.2
+        
+        self.last_foil_action = wants_to_foil
+
+        if wants_to_foil and self.speed >= 4.0:
             self.foil = True
         else:
             self.foil = False
         
         # 3. CALCOLO VENTO APPARENTE
-
         apparent_wind_angle = normalize_angle((self.wind_dir - self.heading))
-        # 4. CALCOLO VELOCITÀ E INERZIA
 
+        # 4. CALCOLO VELOCITÀ E INERZIA
         target_speed = get_polar_speed(apparent_wind_angle, local_wind_speed)
-        #se vuoi la velocità sinusoidale, commenta la riga sopra e decommenta questa
-        #target_speed = self.get_polar_speed_2(apparent_wind_angle, local_wind_speed)
         
         # Moltiplicatori del Foil
         if self.foil:
-            target_speed *= 1.5  # In volo andiamo più veloci
-            turn_penalty = 0.1   # Virare in volo rallenta molto
+            target_speed *= 1.5  
+            turn_penalty = 0.02   
         else:
-            target_speed *= 0.6  # In acqua siamo lenti
-            turn_penalty = 0.05   # Virare in acqua frena meno
+            target_speed *= 0.6  
+            turn_penalty = 0.005   
             
         # Applichiamo la frenata causata dalla virata
         drag_penalty = turn_penalty * abs(action_turn)
         self.speed *= (1.0 - drag_penalty * config.DT)
-        
-        # Inerzia per raggiungere la target_speed
-        inertia = 0.1
+
+        if target_speed > self.speed:
+            inertia = 0.2   # Accelera reattivamente sotto raffica
+        else:
+            inertia = 0.04  # Frena MOOOLTO lentamente. La barca "scivola" e conserva il momento per superare l'angolo morto in curva!
+            
         self.speed = self.speed + inertia * (target_speed - self.speed)
         self.speed = max(0.0, self.speed)
         
@@ -139,9 +147,6 @@ class SailingBoat:
     
         #Time Penalty (Costante)
         reward -= 0.05
-
-        #if(action_turn == 0.0):
-          #reward += 1.0
 
         return reward
 
